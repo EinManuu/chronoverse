@@ -1,0 +1,17 @@
+{
+	"name": "ChronoVerse – Franchise Timeline & Road-to Tracker",
+	"short_name": "ChronoVerse",
+	"description": "Zero-Maintenance Tracker für Marvel, DC & Star Wars inkl. Road-to-Doomsday Filter & Credit-Scene-Spickzettel.",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#090b10",
+	"theme_color": "#090b10",
+	"icons": [
+		{
+			"src": "/favicon.svg",
+			"sizes": "any",
+			"type": "image/svg+xml",
+			"purpose": "any maskable"
+		}
+	]
+}

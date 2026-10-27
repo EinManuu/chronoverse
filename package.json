@@ -1,0 +1,34 @@
+{
+	"name": "movie-timelines",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+	},
+	"dependencies": {
+		"@google/genai": "^2.31.0",
+		"@supabase/supabase-js": "^2.49.1",
+		"lucide-svelte": "^0.479.0"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-auto": "^4.0.0",
+		"@sveltejs/kit": "^2.20.0",
+		"@sveltejs/vite-plugin-svelte": "^5.0.3",
+		"@tailwindcss/vite": "^4.0.9",
+		"svelte": "^5.23.0",
+		"svelte-check": "^4.1.4",
+		"tailwindcss": "^4.0.9",
+		"typescript": "^5.8.2",
+		"vite": "^6.2.0"
+	},
+	"imports": {
+		"#lib": "./src/lib/index.js",
+		"#lib/*": "./src/lib/*"
+	}
+}
