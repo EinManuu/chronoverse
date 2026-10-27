@@ -29,7 +29,9 @@
 		Share2,
 		Search,
 		Star,
-		UserPlus
+		UserPlus,
+		Cloud,
+		Check
 	} from 'lucide-svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -63,8 +65,20 @@
 	let roadToTargetId = $state<string | null>(null);
 	let selectedFriendId = $state<string | null>(null);
 
-	// User Progress Map persisted in localStorage (starts completely clean at 0h / 0 watched!)
+	// User Progress Map synced across devices via /api/progress (Supabase) + localStorage fallback
 	let progressMap = $state<Record<string, UserItemProgress>>({});
+
+	// Cross-Platform Cloud Profile Sync State
+	let activeProfileKey = $state('manu');
+	let customProfileInput = $state('');
+	let showProfileEditor = $state(false);
+	let cloudStorageMode = $state<'supabase-cloud' | 'supabase-needs-table' | 'server-memory'>(
+		'server-memory'
+	);
+	let isCloudSaving = $state(false);
+	let lastCloudSyncAt = $state<string | null>(null);
+	let cloudLoadedForProfile = $state(false);
+	let cloudSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Native <dialog> modal state for Credit Scenes & Item Details
 	let dialogEl = $state<HTMLDialogElement | null>(null);
@@ -81,18 +95,120 @@
 		updates: string[];
 	} | null>(null);
 
-	// Load & persist progress in localStorage
 	let hydrated = $state(false);
-	onMount(() => {
-		const saved = localStorage.getItem('chronoverse_progress_v2');
-		if (saved) {
-			try {
-				progressMap = JSON.parse(saved);
-			} catch {
-				// ignore invalid JSON
+
+	async function loadCloudProfile(profileKey: string) {
+		cloudLoadedForProfile = false;
+		const cleanKey = profileKey.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'manu';
+		activeProfileKey = cleanKey;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('chronoverse_active_profile', cleanKey);
+		}
+
+		// 1. Instant local cache for this profile
+		let localProgress: Record<string, UserItemProgress> = {};
+		if (typeof localStorage !== 'undefined') {
+			const cached =
+				localStorage.getItem(`chronoverse_progress_${cleanKey}`) ??
+				(cleanKey === 'manu' ? localStorage.getItem('chronoverse_progress_v2') : null);
+			if (cached) {
+				try {
+					localProgress = JSON.parse(cached);
+					progressMap = localProgress;
+				} catch {
+					// ignore invalid JSON
+				}
+			} else {
+				progressMap = {};
 			}
 		}
 
+		// 2. Fetch cross-device state from /api/progress (Supabase Cloud / Server)
+		try {
+			const res = await fetch(`/api/progress?profile=${encodeURIComponent(cleanKey)}`);
+			if (res.ok) {
+				const cloud = await res.json();
+				cloudStorageMode = cloud.storageMode ?? cloud.storage ?? 'server-memory';
+				const cloudProgress = cloud.progressMap ?? {};
+				const hasCloudEntries = Object.keys(cloudProgress).length > 0;
+				const hasLocalEntries = Object.keys(localProgress).length > 0;
+
+				if (hasCloudEntries) {
+					progressMap = cloudProgress;
+				} else if (hasLocalEntries) {
+					// Migrate existing local progress up to the cloud profile automatically
+					progressMap = localProgress;
+					void pushProgressToCloud(cleanKey, localProgress);
+				} else {
+					progressMap = {};
+				}
+
+				// Merge any cloud profiles from other users into the co-watch friend list
+				if (Array.isArray(cloud.cloudFriends) && cloud.cloudFriends.length > 0) {
+					const byId = new Map(friendsList.map((f) => [f.id, f]));
+					for (const cf of cloud.cloudFriends) {
+						byId.set(cf.id, cf);
+					}
+					friendsList = Array.from(byId.values());
+				}
+
+				if (cloud.updatedAt) {
+					lastCloudSyncAt = new Date(cloud.updatedAt).toLocaleTimeString('de-DE', {
+						hour: '2-digit',
+						minute: '2-digit'
+					});
+				}
+			}
+		} catch {
+			// Offline fallback: keep localProgress
+		} finally {
+			cloudLoadedForProfile = true;
+		}
+	}
+
+	async function pushProgressToCloud(
+		profileKey: string,
+		currentProgress: Record<string, UserItemProgress>
+	) {
+		isCloudSaving = true;
+		try {
+			const res = await fetch('/api/progress', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					profileKey,
+					displayName: profileKey.charAt(0).toUpperCase() + profileKey.slice(1),
+					progressMap: currentProgress,
+					friendsList
+				})
+			});
+			if (res.ok) {
+				const result = await res.json();
+				if (result.storageMode || result.storage) {
+					cloudStorageMode = result.storageMode ?? result.storage;
+				}
+				lastCloudSyncAt = new Date().toLocaleTimeString('de-DE', {
+					hour: '2-digit',
+					minute: '2-digit'
+				});
+			}
+		} catch {
+			// Offline fallback: saved in localStorage
+		} finally {
+			isCloudSaving = false;
+		}
+	}
+
+	function switchProfile(nextKey: string) {
+		const cleaned = nextKey.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+		if (!cleaned) return;
+		showProfileEditor = false;
+		customProfileInput = '';
+		void loadCloudProfile(cleaned);
+	}
+
+	onMount(() => {
+		const savedProfile = localStorage.getItem('chronoverse_active_profile') || 'manu';
 		const savedFriends = localStorage.getItem('chronoverse_friends_v1');
 		if (savedFriends) {
 			try {
@@ -117,6 +233,7 @@
 		}
 
 		hydrated = true;
+		void loadCloudProfile(savedProfile);
 
 		// Mandatory fallback for browsers without native <dialog closedby="any"> support
 		// (modern-web-guidance: light-dismiss-a-dialog)
@@ -136,9 +253,21 @@
 	});
 
 	$effect(() => {
-		if (hydrated) {
-			localStorage.setItem('chronoverse_progress_v2', JSON.stringify(progressMap));
-			localStorage.setItem('chronoverse_friends_v1', JSON.stringify(friendsList));
+		const serializedProgress = JSON.stringify(progressMap);
+		const serializedFriends = JSON.stringify(friendsList);
+		const currentProfile = activeProfileKey;
+
+		if (hydrated && cloudLoadedForProfile) {
+			localStorage.setItem(`chronoverse_progress_${currentProfile}`, serializedProgress);
+			if (currentProfile === 'manu') {
+				localStorage.setItem('chronoverse_progress_v2', serializedProgress);
+			}
+			localStorage.setItem('chronoverse_friends_v1', serializedFriends);
+
+			if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
+			cloudSaveTimer = setTimeout(() => {
+				void pushProgressToCloud(currentProfile, JSON.parse(serializedProgress));
+			}, 350);
 		}
 	});
 
@@ -661,34 +790,73 @@
 	}
 </script>
 
-<div class="min-h-screen bg-[#090b10] text-slate-100 pb-24">
-	<!-- Top Header / Navigation -->
-	<header class="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090b10]/90 backdrop-blur-md">
-		<div class="mx-auto max-w-6xl px-4 py-3.5 flex flex-wrap items-center justify-between gap-4">
-			<div class="flex items-center gap-3">
-				<div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-red-600 to-amber-600 shadow-lg shadow-red-900/30">
-					<Film class="h-5 w-5 text-white" />
-				</div>
-				<div>
-					<div class="flex items-center gap-2">
-						<h1 class="text-lg font-bold tracking-tight text-white">ChronoVerse</h1>
-						<span class="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
-							Zero-Maintenance PWA
-						</span>
+<div class="min-h-dvh bg-[#090b10] text-slate-100 pb-24 overflow-x-hidden">
+	<!-- Top Header / Navigation (Mobile-First + Cross-Device Cloud Sync Profile) -->
+	<header class="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090b10]/95 backdrop-blur-md">
+		<div class="mx-auto max-w-6xl px-3 sm:px-4 py-2.5 sm:py-3.5 space-y-2.5 md:space-y-0 md:flex md:flex-wrap md:items-center md:justify-between md:gap-4">
+			<!-- Row 1 on Mobile: Brand + Cloud Sync Profile + Quick Actions -->
+			<div class="flex items-center justify-between gap-2">
+				<div class="flex items-center gap-2.5 min-w-0">
+					<div class="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-red-600 to-amber-600 shadow-lg shadow-red-900/30">
+						<Film class="h-4 w-4 sm:h-5 sm:w-5 text-white" />
 					</div>
-					<p class="text-xs text-slate-400">
-						Franchise Timeline, Credit-Scene-Spickzettel & „Road to…“-Filter
-					</p>
+					<div class="min-w-0">
+						<div class="flex items-center gap-1.5 sm:gap-2">
+							<h1 class="text-base sm:text-lg font-bold tracking-tight text-white truncate">ChronoVerse</h1>
+							<span class="hidden sm:inline-flex rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+								Cloud-Sync PWA
+							</span>
+						</div>
+						<p class="hidden sm:block text-xs text-slate-400 truncate">
+							Plattformübergreifende Timeline, Credit-Scene-Guide & „Road to…“-Filter
+						</p>
+					</div>
+				</div>
+
+				<!-- Mobile Actions (shown right next to logo on <md) -->
+				<div class="flex md:hidden items-center gap-1.5">
+					<button
+						type="button"
+						onclick={() => (showProfileEditor = !showProfileEditor)}
+						class="inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-semibold transition cursor-pointer {cloudStorageMode ===
+						'supabase-cloud'
+							? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
+							: 'border-sky-500/40 bg-sky-950/30 text-sky-200'}"
+						title="Plattformübergreifendes Cloud-Profil wechseln (Handy ↔ PC)"
+					>
+						<Cloud class="h-3.5 w-3.5 {isCloudSaving ? 'animate-pulse text-amber-300' : 'text-sky-400'}" />
+						<span>{activeProfileKey}</span>
+					</button>
+
+					<button
+						type="button"
+						onclick={copyShareLinkForFriends}
+						class="inline-flex items-center gap-1 rounded-xl border border-slate-700/80 bg-slate-900/80 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 cursor-pointer"
+						title="Stand per Link teilen"
+					>
+						<Share2 class="h-3.5 w-3.5 text-sky-400" />
+						<span>{shareCopied ? '✓' : 'Teilen'}</span>
+					</button>
+
+					<button
+						type="button"
+						onclick={triggerAutoSync}
+						disabled={isSyncing}
+						class="inline-flex items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-1.5 text-emerald-200 disabled:opacity-50 cursor-pointer"
+						aria-label="Auto-Sync starten"
+					>
+						<RefreshCw class="h-3.5 w-3.5 text-emerald-400 {isSyncing ? 'animate-spin' : ''}" />
+					</button>
 				</div>
 			</div>
 
-			<!-- Franchise Switcher Tabs -->
-			<div class="flex items-center gap-1.5 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
+			<!-- Row 2 on Mobile / Center on Desktop: Franchise Switcher Tabs (Full-width 3-col grid on mobile) -->
+			<div class="grid grid-cols-3 md:flex items-center gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800 w-full md:w-auto">
 				{#each franchisesList as franchise (franchise.id)}
 					<button
 						type="button"
 						onclick={() => selectFranchise(franchise.id)}
-						class="rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all cursor-pointer {selectedFranchiseId ===
+						class="rounded-lg px-2.5 sm:px-3.5 py-1.5 text-xs font-semibold transition-all text-center truncate cursor-pointer {selectedFranchiseId ===
 						franchise.id
 							? 'bg-slate-800 text-white shadow-sm border border-slate-700'
 							: 'text-slate-400 hover:text-slate-200'}"
@@ -698,8 +866,28 @@
 				{/each}
 			</div>
 
-			<!-- Zero-Maintenance Sync Button & Friends Share -->
-			<div class="flex items-center gap-2">
+			<!-- Desktop Cloud Profile & Sync Buttons -->
+			<div class="hidden md:flex items-center gap-2">
+				<button
+					type="button"
+					onclick={() => (showProfileEditor = !showProfileEditor)}
+					class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition cursor-pointer {cloudStorageMode ===
+					'supabase-cloud'
+						? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40'
+						: 'border-sky-500/40 bg-sky-950/30 text-sky-200 hover:bg-sky-900/40'}"
+					title="Plattformübergreifendes Cloud-Profil für PC & Smartphone wechseln"
+				>
+					<Cloud class="h-3.5 w-3.5 {isCloudSaving ? 'animate-bounce text-amber-300' : 'text-sky-400'}" />
+					<span>Profil: <strong>{activeProfileKey}</strong></span>
+					<span class="rounded bg-black/30 px-1.5 py-0.5 text-[10px] text-slate-300">
+						{isCloudSaving
+							? 'speichert…'
+							: cloudStorageMode === 'supabase-cloud'
+								? 'Supabase ☁️'
+								: 'Cloud-Sync ☁️'}
+					</span>
+				</button>
+
 				<button
 					type="button"
 					onclick={copyShareLinkForFriends}
@@ -718,13 +906,72 @@
 					title="Prüft TMDB-Listen, Credit-Scene-Keywords & Gemini Grounding (0,00 € Quota-Schutz)"
 				>
 					<RefreshCw class="h-3.5 w-3.5 text-emerald-400 {isSyncing ? 'animate-spin' : ''}" />
-					<span>{isSyncing ? 'Synchronisiere...' : 'Auto-Sync starten'}</span>
+					<span>{isSyncing ? 'Synchronisiere...' : 'Auto-Sync'}</span>
 				</button>
 			</div>
 		</div>
+
+		<!-- Expandable Cross-Device Cloud Profile Switcher Bar -->
+		{#if showProfileEditor}
+			<div class="border-t border-slate-800/90 bg-slate-950/95 px-3 sm:px-4 py-3">
+				<div class="mx-auto max-w-6xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+					<div class="space-y-0.5">
+						<div class="flex items-center gap-2 text-xs font-bold text-sky-300">
+							<Cloud class="h-4 w-4 text-sky-400" />
+							<span>Plattformübergreifendes Cloud-Profil (PC ↔ Smartphone)</span>
+							{#if lastCloudSyncAt}
+								<span class="text-[11px] font-normal text-emerald-400">
+									• Zuletzt synchronisiert um {lastCloudSyncAt} Uhr
+								</span>
+							{/if}
+						</div>
+						<p class="text-[11px] text-slate-400">
+							Gib auf dem Handy und am PC denselben Profil-Namen ein (z.B. <code class="text-slate-200">manu</code>), um deinen Fortschritt und deine Bewertungen automatisch über Supabase / Cloud abzugleichen – ganz ohne Passwort-Zwang.
+						</p>
+					</div>
+
+					<div class="flex flex-wrap items-center gap-1.5">
+						{#each ['manu', 'max', 'sarah'] as preset}
+							<button
+								type="button"
+								onclick={() => switchProfile(preset)}
+								class="rounded-lg border px-2.5 py-1 text-xs font-semibold transition cursor-pointer {activeProfileKey ===
+								preset
+									? 'border-sky-400 bg-sky-500/20 text-sky-200'
+									: 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'}"
+							>
+								{preset}
+							</button>
+						{/each}
+
+						<form
+							class="flex items-center gap-1.5"
+							onsubmit={(e) => {
+								e.preventDefault();
+								if (customProfileInput.trim()) switchProfile(customProfileInput);
+							}}
+						>
+							<input
+								type="text"
+								bind:value={customProfileInput}
+								placeholder="Eigenes Profil..."
+								class="w-32 sm:w-36 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+							/>
+							<button
+								type="submit"
+								class="inline-flex items-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1 text-xs font-bold text-slate-950 hover:bg-sky-400 cursor-pointer"
+							>
+								<Check class="h-3.5 w-3.5" />
+								<span>Wechseln</span>
+							</button>
+						</form>
+					</div>
+				</div>
+			</div>
+		{/if}
 	</header>
 
-	<main class="mx-auto max-w-6xl px-4 pt-6 space-y-6">
+	<main class="mx-auto max-w-6xl px-3 sm:px-4 pt-4 sm:pt-6 space-y-4 sm:space-y-6">
 		<!-- Imported Friend Share Link Banner -->
 		{#if pendingImportedFriendIds}
 			<div class="rounded-2xl border border-sky-500/40 bg-sky-950/30 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -783,28 +1030,28 @@
 		{/if}
 
 		<!-- Franchise Hero & Overall Progress -->
-		<section class="rounded-2xl border border-slate-800/90 bg-gradient-to-br from-slate-900/90 via-slate-900/60 to-slate-950 p-5 sm:p-6">
+		<section class="rounded-2xl border border-slate-800/90 bg-gradient-to-br from-slate-900/90 via-slate-900/60 to-slate-950 p-4 sm:p-6">
 			<div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
 				<div class="space-y-1.5">
-					<div class="flex flex-wrap items-center gap-2.5">
+					<div class="flex flex-wrap items-center gap-2">
 						<span class="rounded-full border px-2.5 py-0.5 text-xs font-semibold {currentFranchise.badgeBg}">
 							{currentFranchise.shortName}
 						</span>
 						<span class="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300 flex items-center gap-1">
-							<ShieldCheck class="h-3.5 w-3.5 text-emerald-400" />
-							Live API aktiv: {apiStats.totalLiveItems} Titel • {apiStats.postersResolved} Cover-Bilder ({apiStats.durationMs} ms)
+							<ShieldCheck class="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+							<span>Live API: {apiStats.totalLiveItems} Titel • {apiStats.postersResolved} Cover ({apiStats.durationMs} ms)</span>
 						</span>
-						<span class="text-xs text-slate-400 flex items-center gap-1">
+						<span class="hidden sm:flex text-xs text-slate-400 items-center gap-1">
 							<Sparkles class="h-3.5 w-3.5 text-amber-400" />
 							Quelle: {currentFranchise.autoSyncSource}
 						</span>
 					</div>
-					<h2 class="text-2xl font-bold text-white">{currentFranchise.name}</h2>
-					<p class="text-sm text-slate-400">{currentFranchise.tagline}</p>
+					<h2 class="hero-title-clamp font-bold text-white">{currentFranchise.name}</h2>
+					<p class="text-xs sm:text-sm text-slate-400">{currentFranchise.tagline}</p>
 				</div>
 
 				<!-- Overall Franchise Progress & Remaining Universe Watchtime Box -->
-				<div class="min-w-[280px] sm:min-w-[320px] rounded-xl border border-slate-800 bg-slate-950/80 p-3.5 space-y-2">
+				<div class="w-full md:w-auto md:min-w-[320px] rounded-xl border border-slate-800 bg-slate-950/80 p-3.5 space-y-2">
 					<div class="flex items-center justify-between text-xs">
 						<span class="text-slate-400 font-medium">Universums-Fortschritt</span>
 						<span class="font-bold text-white">
@@ -830,7 +1077,7 @@
 							{/if}
 						</span>
 					</div>
-					<div class="flex items-center justify-between text-[10px] text-slate-400">
+					<div class="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400">
 						<span>Bereits geschaut: {franchiseProgress.watchedHours} / {franchiseProgress.totalHours} Std. ({franchiseProgress.timePercent}%)</span>
 						{#if franchiseProgress.watchedHours > 0 || franchiseProgress.watched > 0}
 							<button
@@ -1017,46 +1264,46 @@
 		<!-- ====================================================================== -->
 		<!-- FILTER & SORTING TOOLBAR                                               -->
 		<!-- ====================================================================== -->
-		<section class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/60 p-3.5">
+		<section class="flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/60 p-3 sm:p-3.5">
 			<!-- Sort Mode: Chronological vs Release Order -->
-			<div class="flex items-center gap-1.5 rounded-xl bg-slate-950 p-1 border border-slate-800">
+			<div class="grid grid-cols-2 sm:flex items-center gap-1 rounded-xl bg-slate-950 p-1 border border-slate-800 w-full sm:w-auto">
 				<button
 					type="button"
 					onclick={() => (sortOrder = 'chronological')}
-					class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition cursor-pointer {sortOrder ===
+					class="flex items-center justify-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition cursor-pointer {sortOrder ===
 					'chronological'
 						? 'bg-slate-800 text-white shadow-sm'
 						: 'text-slate-400 hover:text-slate-200'}"
 				>
-					<Clock class="h-3.5 w-3.5 text-amber-400" />
-					<span>Chronologische Timeline (In-Universe Jahr)</span>
+					<Clock class="h-3.5 w-3.5 text-amber-400 shrink-0" />
+					<span class="truncate">Chronologisch (Lore)</span>
 				</button>
 				<button
 					type="button"
 					onclick={() => (sortOrder = 'release')}
-					class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition cursor-pointer {sortOrder ===
+					class="flex items-center justify-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition cursor-pointer {sortOrder ===
 					'release'
 						? 'bg-slate-800 text-white shadow-sm'
 						: 'text-slate-400 hover:text-slate-200'}"
 				>
-					<Calendar class="h-3.5 w-3.5 text-sky-400" />
-					<span>Release-Reihenfolge (Kinostart-Jahr)</span>
+					<Calendar class="h-3.5 w-3.5 text-sky-400 shrink-0" />
+					<span class="truncate">Release (Kinostart)</span>
 				</button>
 			</div>
 
 			<!-- Live Search Input -->
-			<div class="relative flex-1 min-w-[200px] max-w-xs">
+			<div class="relative w-full sm:flex-1 sm:min-w-[200px] sm:max-w-xs">
 				<Search class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
 				<input
 					type="search"
 					bind:value={searchQuery}
 					placeholder="Suche nach Titel, Charakter, Jahr..."
-					class="w-full rounded-xl border border-slate-800 bg-slate-950/90 pl-8 pr-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-slate-600 focus:outline-none"
+					class="w-full rounded-xl border border-slate-800 bg-slate-950/90 pl-8 pr-3 py-2 sm:py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-slate-600 focus:outline-none"
 				/>
 			</div>
 
 			<!-- Media Type Filter (Movies, Series, One-Shots/Specials) -->
-			<div class="flex flex-wrap items-center gap-1.5">
+			<div class="flex flex-wrap items-center gap-1.5 w-full lg:w-auto">
 				<button
 					type="button"
 					onclick={() => (mediaTypeFilter = 'all')}
@@ -1065,7 +1312,7 @@
 						? 'bg-slate-800 border-slate-600 text-white'
 						: 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'}"
 				>
-					Alle Formate
+					Alle
 				</button>
 				<button
 					type="button"
@@ -1095,10 +1342,10 @@
 						? 'bg-amber-950/80 border-amber-500/50 text-amber-200'
 						: 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'}"
 				>
-					⚡ One-Shots & Specials
+					⚡ Specials
 				</button>
 
-				<span class="mx-1 h-4 w-px bg-slate-800"></span>
+				<span class="hidden sm:inline-block mx-1 h-4 w-px bg-slate-800"></span>
 
 				<!-- Status Filter -->
 				<button
@@ -1115,43 +1362,43 @@
 			</div>
 
 			<!-- Canon / Studio Scope Filter Row (Core Studios vs. Expanded Marvel vs. Non-Marvel Studios ~1,395h) -->
-			<div class="w-full pt-2.5 border-t border-slate-800/70 flex flex-wrap items-center justify-between gap-2">
-				<div class="flex flex-wrap items-center gap-2">
-					<span class="text-[11px] font-semibold text-slate-300 mr-1">
+			<div class="w-full pt-2.5 border-t border-slate-800/70 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2">
+				<div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+					<span class="w-full sm:w-auto text-[11px] font-semibold text-slate-300 mr-1">
 						{selectedFranchiseId === 'mcu' ? 'Marvel-Umfang (bis 1.395 Std.):' : 'Kanon-Umfang:'}
 					</span>
 
 					<button
 						type="button"
 						onclick={() => (includeCoreStudios = !includeCoreStudios)}
-						class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition cursor-pointer {includeCoreStudios
+						class="inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-semibold transition text-left cursor-pointer {includeCoreStudios
 							? 'bg-red-500/20 border-red-500/50 text-red-200 shadow-sm'
 							: 'bg-slate-950/60 border-slate-800 text-slate-500 hover:text-slate-300'}"
 					>
 						<span>{includeCoreStudios ? '✓' : '○'}</span>
 						<span>
 							{selectedFranchiseId === 'mcu'
-								? `🏛️ Marvel Studios Core (${scopeBreakdown.coreCount} Titel • ${scopeBreakdown.coreHours} Std.)`
+								? `🏛️ Marvel Studios (${scopeBreakdown.coreCount} • ${scopeBreakdown.coreHours}h)`
 								: selectedFranchiseId === 'dcu'
-									? `🏛️ DCU & Batverse Core (${scopeBreakdown.coreCount} Titel • ${scopeBreakdown.coreHours} Std.)`
-									: `🏛️ Star Wars Live-Action Core (${scopeBreakdown.coreCount} Titel • ${scopeBreakdown.coreHours} Std.)`}
+									? `🏛️ DCU & Batverse (${scopeBreakdown.coreCount} • ${scopeBreakdown.coreHours}h)`
+									: `🏛️ Live-Action Core (${scopeBreakdown.coreCount} • ${scopeBreakdown.coreHours}h)`}
 						</span>
 					</button>
 
 					<button
 						type="button"
 						onclick={() => (includeExpandedMarvel = !includeExpandedMarvel)}
-						class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition cursor-pointer {includeExpandedMarvel
+						class="inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-semibold transition text-left cursor-pointer {includeExpandedMarvel
 							? 'bg-purple-500/20 border-purple-500/50 text-purple-200 shadow-sm'
 							: 'bg-slate-950/60 border-slate-800 text-slate-500 hover:text-slate-300'}"
 					>
 						<span>{includeExpandedMarvel ? '✓' : '○'}</span>
 						<span>
 							{selectedFranchiseId === 'mcu'
-								? `📺 Expanded Marvel TV / Defenders (${scopeBreakdown.expandedCount} Titel • ${scopeBreakdown.expandedHours} Std.)`
+								? `📺 Expanded Marvel TV (${scopeBreakdown.expandedCount} • ${scopeBreakdown.expandedHours}h)`
 								: selectedFranchiseId === 'dcu'
-									? `📺 Expanded DCEU (${scopeBreakdown.expandedCount} Titel • ${scopeBreakdown.expandedHours} Std.)`
-									: `📺 Expanded Canon Animation (${scopeBreakdown.expandedCount} Titel • ${scopeBreakdown.expandedHours} Std.)`}
+									? `📺 Expanded DCEU (${scopeBreakdown.expandedCount} • ${scopeBreakdown.expandedHours}h)`
+									: `📺 Canon Animation (${scopeBreakdown.expandedCount} • ${scopeBreakdown.expandedHours}h)`}
 						</span>
 					</button>
 
@@ -1159,15 +1406,15 @@
 						<button
 							type="button"
 							onclick={() => (includeNonMarvelStudios = !includeNonMarvelStudios)}
-							class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition cursor-pointer {includeNonMarvelStudios
+							class="inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-semibold transition text-left cursor-pointer {includeNonMarvelStudios
 								? 'bg-amber-500/20 border-amber-500/50 text-amber-200 shadow-sm'
 								: 'bg-slate-950/60 border-slate-800 text-slate-500 hover:text-slate-300'}"
 						>
 							<span>{includeNonMarvelStudios ? '✓' : '○'}</span>
 							<span>
 								{selectedFranchiseId === 'mcu'
-									? `🌌 Non-Marvel Studios: X-Men, Sony Spider-Man, Blade & Animation (${scopeBreakdown.nonStudiosCount} Titel • ${scopeBreakdown.nonStudiosHours} Std.)`
-									: `🌌 Vintage & Legends (${scopeBreakdown.nonStudiosCount} Titel • ${scopeBreakdown.nonStudiosHours} Std.)`}
+									? `🌌 Non-Marvel Studios: X-Men, Sony & Co. (${scopeBreakdown.nonStudiosCount} • ${scopeBreakdown.nonStudiosHours}h)`
+									: `🌌 Vintage & Legends (${scopeBreakdown.nonStudiosCount} • ${scopeBreakdown.nonStudiosHours}h)`}
 							</span>
 						</button>
 					{/if}
@@ -1230,10 +1477,10 @@
 		<!-- ====================================================================== -->
 		<!-- INTERACTIVE TIMELINE STREAM WITH PROMINENT YEAR MARKERS ON THE AXIS    -->
 		<!-- ====================================================================== -->
-		<section class="relative space-y-5">
+		<section class="relative space-y-4 sm:space-y-5">
 			<!-- Vertical Timeline Spine (directly behind the Year Badges column) -->
 			<div
-				class="pointer-events-none absolute top-4 bottom-4 left-[36px] sm:left-[48px] w-0.5 bg-gradient-to-b from-red-500/70 via-slate-700 to-amber-500/70"
+				class="pointer-events-none absolute top-4 bottom-4 left-[24px] sm:left-[48px] w-0.5 bg-gradient-to-b from-red-500/70 via-slate-700 to-amber-500/70"
 			></div>
 
 			{#each filteredAndSortedItems as item, index (item.id)}
@@ -1247,11 +1494,11 @@
 				{@const prevAxisYear = index > 0 ? getAxisYearLabel(filteredAndSortedItems[index - 1]) : null}
 				{@const isNewYearOnAxis = axisYear !== prevAxisYear}
 
-				<div class="relative flex items-start gap-3 sm:gap-5 {index >= 4 ? 'timeline-card-deferred' : ''}">
-					<!-- LEFT AXIS COLUMN: Prominent Year Pill directly on the Timeline Spine -->
-					<div class="relative z-10 flex w-[72px] sm:w-[96px] shrink-0 flex-col items-center pt-4">
+				<div class="relative flex items-start gap-2.5 sm:gap-5 {index >= 4 ? 'timeline-card-deferred' : ''}">
+					<!-- LEFT AXIS COLUMN: Prominent Year Pill directly on the Timeline Spine (compact w-12 on mobile, w-24 on sm+) -->
+					<div class="relative z-10 flex w-12 sm:w-24 shrink-0 flex-col items-center pt-3.5 sm:pt-4">
 						<div
-							class="flex flex-col items-center justify-center rounded-xl border px-2.5 py-1.5 text-center shadow-md transition-all {isTargetMilestone
+							class="flex flex-col items-center justify-center rounded-xl border px-1.5 sm:px-2.5 py-1 sm:py-1.5 text-center shadow-md transition-all {isTargetMilestone
 								? 'border-amber-300 bg-amber-500 text-slate-950 shadow-amber-500/30 scale-105'
 								: isFulfilled
 									? 'border-emerald-500/60 bg-emerald-950/90 text-emerald-200'
@@ -1259,10 +1506,10 @@
 										? 'border-slate-500 bg-slate-800 text-white shadow-black/50'
 										: 'border-slate-800 bg-slate-900/95 text-slate-400'}"
 						>
-							<span class="text-[9px] uppercase tracking-wider font-semibold opacity-75">
+							<span class="hidden sm:block text-[9px] uppercase tracking-wider font-semibold opacity-75">
 								{sortOrder === 'chronological' ? 'Zeitachse' : 'Release'}
 							</span>
-							<span class="text-xs sm:text-sm font-extrabold tracking-tight leading-none mt-0.5">
+							<span class="text-[10px] sm:text-sm font-extrabold tracking-tight leading-tight sm:mt-0.5">
 								{axisYear}
 							</span>
 						</div>
@@ -1279,9 +1526,9 @@
 						></div>
 					</div>
 
-					<!-- RIGHT CARD COLUMN: Media Item Card -->
+					<!-- RIGHT CARD COLUMN: Media Item Card (Container Query enabled via .timeline-card-container) -->
 					<article
-						class="flex-1 min-w-0 rounded-2xl border transition-all duration-200 {isTargetMilestone
+						class="timeline-card-container flex-1 min-w-0 rounded-2xl border transition-all duration-200 {isTargetMilestone
 							? 'border-amber-400/80 bg-gradient-to-r from-amber-950/40 via-slate-900 to-slate-900 shadow-lg shadow-amber-950/30'
 							: isFulfilled
 								? 'border-emerald-500/30 bg-slate-900/45'
@@ -1289,62 +1536,106 @@
 									? 'border-cyan-500/40 bg-slate-900/90 hover:border-cyan-400/60'
 									: 'border-slate-800 bg-slate-900/85 hover:border-slate-700'}"
 					>
-						<div class="p-4 sm:p-5 flex flex-col md:flex-row gap-4 sm:gap-5 items-start md:items-center justify-between">
+						<div class="timeline-card-inner p-3.5 sm:p-5">
 							<!-- Left Column inside Card: Official Cover Image + Metadata -->
-							<div class="flex items-start gap-3.5 sm:gap-4 flex-1 min-w-0">
-								<!-- Official Movie / Series Cover Poster (fetched live from API) -->
-								<button
-									type="button"
-									onclick={() => openItemModal(item)}
-									class="group relative flex h-28 w-20 sm:h-36 sm:w-24 shrink-0 overflow-hidden rounded-xl bg-gradient-to-br {item.posterGradient} border border-white/15 shadow-lg transition-transform hover:scale-[1.03] cursor-pointer text-left"
-									title="Cover & Credit-Scene-Details für {item.title} öffnen"
-								>
-									{#if item.posterUrl && !failedPosterIds[item.id]}
-										{#if index < 2}
-											<img
-												src={item.posterUrl}
-												alt="{item.title} Cover"
-												fetchpriority="high"
-												width="192"
-												height="288"
-												onerror={() => (failedPosterIds[item.id] = true)}
-												class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-											/>
-										{:else}
-											<img
-												src={item.posterUrl}
-												alt="{item.title} Cover"
-												loading="lazy"
-												width="192"
-												height="288"
-												onerror={() => (failedPosterIds[item.id] = true)}
-												class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-											/>
-										{/if}
-										<div class="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-1.5 py-1 flex items-center justify-between">
-											<span class="text-[9px] font-bold text-white/90">
-												{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `#${item.releaseOrder}`}
-											</span>
-											<span class="text-[8px] font-semibold text-amber-300 truncate max-w-[54px]">
-												{item.streamingProvider}
-											</span>
-										</div>
-									{:else}
-										<div class="flex h-full w-full flex-col justify-between p-2">
-											<span class="text-[10px] font-bold uppercase tracking-wider text-white/75">
-												{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `Rel #${item.releaseOrder}`}
-											</span>
-											<div class="text-[11px] font-bold leading-tight text-white line-clamp-3">
-												{item.title}
+							<div class="flex flex-col sm:flex-row items-start gap-3 sm:gap-4 flex-1 min-w-0 w-full">
+								<!-- Mobile Top Header Row: Cover Poster + Badges + Title side-by-side so synopsis gets full width below on mobile -->
+								<div class="flex items-start gap-3 sm:contents w-full">
+									<!-- Official Movie / Series Cover Poster (fetched live from API, with aspect-ratio: 2/3) -->
+									<button
+										type="button"
+										onclick={() => openItemModal(item)}
+										class="poster-aspect group relative flex w-20 sm:w-24 shrink-0 overflow-hidden rounded-xl bg-gradient-to-br {item.posterGradient} border border-white/15 shadow-lg transition-transform hover:scale-[1.03] cursor-pointer text-left"
+										title="Cover & Credit-Scene-Details für {item.title} öffnen"
+									>
+										{#if item.posterUrl && !failedPosterIds[item.id]}
+											{#if index < 2}
+												<img
+													src={item.posterUrl}
+													alt="{item.title} Cover"
+													fetchpriority="high"
+													width="192"
+													height="288"
+													onerror={() => (failedPosterIds[item.id] = true)}
+													class="poster-aspect h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+												/>
+											{:else}
+												<img
+													src={item.posterUrl}
+													alt="{item.title} Cover"
+													loading="lazy"
+													width="192"
+													height="288"
+													onerror={() => (failedPosterIds[item.id] = true)}
+													class="poster-aspect h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+												/>
+											{/if}
+											<div class="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-1.5 py-1 flex items-center justify-between">
+												<span class="text-[9px] font-bold text-white/90">
+													{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `#${item.releaseOrder}`}
+												</span>
+												<span class="text-[8px] font-semibold text-amber-300 truncate max-w-[54px]">
+													{item.streamingProvider}
+												</span>
 											</div>
-											<span class="text-[9px] text-white/70 font-medium">{item.streamingProvider}</span>
-										</div>
-									{/if}
-								</button>
+										{:else}
+											<div class="flex h-full w-full flex-col justify-between p-2">
+												<span class="text-[10px] font-bold uppercase tracking-wider text-white/75">
+													{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `Rel #${item.releaseOrder}`}
+												</span>
+												<div class="text-[11px] font-bold leading-tight text-white line-clamp-3">
+													{item.title}
+												</div>
+												<span class="text-[9px] text-white/70 font-medium">{item.streamingProvider}</span>
+											</div>
+										{/if}
+									</button>
 
-								<div class="space-y-2 flex-1 min-w-0">
-									<!-- Badges Row -->
-									<div class="flex flex-wrap items-center gap-1.5">
+									<!-- Mobile Title & Primary Badges (next to poster on <sm, merged into main column on sm+) -->
+									<div class="flex-1 min-w-0 space-y-1.5 sm:hidden">
+										<div class="flex flex-wrap items-center gap-1">
+											<span class="rounded-md border px-1.5 py-0.5 text-[10px] font-semibold {typeBadge.classes}">
+												{typeBadge.label}
+											</span>
+											{#if item.canonScope === 'non_marvel_studios'}
+												<span class="rounded-md border border-amber-500/40 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+													🌌 Non-Studios
+												</span>
+											{:else if item.canonScope === 'expanded_universe'}
+												<span class="rounded-md border border-purple-500/40 bg-purple-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-purple-300">
+													📺 Expanded
+												</span>
+											{:else}
+												<span class="rounded-md border border-red-500/30 bg-red-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">
+													🏛️ Core
+												</span>
+											{/if}
+										</div>
+
+										<h3 class="text-base font-bold leading-snug {isFulfilled ? 'text-slate-200' : 'text-white'}">
+											{item.title}
+										</h3>
+
+										<div class="text-[11px] text-slate-400">
+											⏳ {item.inUniverseYear} • Kinostart: {item.releaseDate.slice(0, 4)}
+										</div>
+
+										{#if progress.rating}
+											<button
+												type="button"
+												onclick={() => openItemModal(item)}
+												class="inline-flex items-center gap-1 rounded-full bg-amber-500/15 border border-amber-400/40 px-2 py-0.5 text-[11px] font-bold text-amber-300 cursor-pointer"
+											>
+												<Star class="h-3 w-3 fill-amber-400 text-amber-400" />
+												<span>{progress.rating.toLocaleString('de-DE')} / 5</span>
+											</button>
+										{/if}
+									</div>
+								</div>
+
+								<div class="space-y-2 flex-1 min-w-0 w-full">
+									<!-- Desktop/Tablet Badges Row (hidden on <sm where compact badges are shown next to poster) -->
+									<div class="hidden sm:flex flex-wrap items-center gap-1.5">
 										<span class="rounded-md border px-2 py-0.5 text-[11px] font-semibold {typeBadge.classes}">
 											{typeBadge.label}
 										</span>
@@ -1367,42 +1658,46 @@
 										<span class="rounded-md bg-slate-800/60 px-2 py-0.5 text-[11px] text-slate-400">
 											⏳ Spielt: {item.inUniverseYear} • Kinostart: {item.releaseDate.slice(0, 4)}
 										</span>
-
-										{#if newlySyncedItemId === item.id}
-											<span class="rounded-md bg-emerald-500 text-slate-950 px-2.5 py-0.5 text-[11px] font-bold animate-pulse">
-												✨ NEU PER AUTO-SYNC
-											</span>
-										{/if}
-
-										{#if isTargetMilestone}
-											<span class="rounded-md bg-amber-500 text-slate-950 px-2.5 py-0.5 text-[11px] font-bold">
-												🎯 ZIEL-EVENT
-											</span>
-										{/if}
-
-										{#if depInfo}
-											{@const prioBadge = getPriorityBadge(depInfo.priority)}
-											<span class="rounded-md border px-2.5 py-0.5 text-[11px] font-semibold {prioBadge.classes}">
-												{prioBadge.label}
-											</span>
-
-											<!-- NEW: "NUR CREDIT-SCENE NÖTIG" / "KEY EPISODES" BADGE -->
-											{#if depInfo.watchScope === 'credits_only'}
-												<span class="inline-flex items-center gap-1 rounded-md border border-cyan-400/60 bg-cyan-500/20 px-2.5 py-0.5 text-[11px] font-bold text-cyan-200 shadow-sm shadow-cyan-950">
-													<Zap class="h-3 w-3 text-cyan-300" />
-													<span>NUR CREDIT-SCENE NÖTIG ({depInfo.effectiveMinutes ?? 3} Min. statt {item.runtimeMinutes} Min.!)</span>
-												</span>
-											{:else if depInfo.watchScope === 'key_episodes'}
-												<span class="inline-flex items-center gap-1 rounded-md border border-cyan-400/60 bg-cyan-500/20 px-2.5 py-0.5 text-[11px] font-bold text-cyan-200">
-													<Zap class="h-3 w-3 text-cyan-300" />
-													<span>NUR SCHLÜSSEL-FOLGEN ({depInfo.effectiveMinutes ?? 45} Min.)</span>
-												</span>
-											{/if}
-										{/if}
 									</div>
 
-									<!-- Title -->
-									<div class="flex flex-wrap items-center gap-2">
+									<!-- Event / Road-to Badges (shown on all screen sizes) -->
+									{#if newlySyncedItemId === item.id || isTargetMilestone || depInfo}
+										<div class="flex flex-wrap items-center gap-1.5">
+											{#if newlySyncedItemId === item.id}
+												<span class="rounded-md bg-emerald-500 text-slate-950 px-2.5 py-0.5 text-[11px] font-bold animate-pulse">
+													✨ NEU PER AUTO-SYNC
+												</span>
+											{/if}
+
+											{#if isTargetMilestone}
+												<span class="rounded-md bg-amber-500 text-slate-950 px-2.5 py-0.5 text-[11px] font-bold">
+													🎯 ZIEL-EVENT
+												</span>
+											{/if}
+
+											{#if depInfo}
+												{@const prioBadge = getPriorityBadge(depInfo.priority)}
+												<span class="rounded-md border px-2.5 py-0.5 text-[11px] font-semibold {prioBadge.classes}">
+													{prioBadge.label}
+												</span>
+
+												{#if depInfo.watchScope === 'credits_only'}
+													<span class="inline-flex items-center gap-1 rounded-md border border-cyan-400/60 bg-cyan-500/20 px-2.5 py-0.5 text-[11px] font-bold text-cyan-200 shadow-sm shadow-cyan-950">
+														<Zap class="h-3 w-3 text-cyan-300 shrink-0" />
+														<span>NUR CREDIT-SCENE ({depInfo.effectiveMinutes ?? 3} Min. statt {item.runtimeMinutes} Min.!)</span>
+													</span>
+												{:else if depInfo.watchScope === 'key_episodes'}
+													<span class="inline-flex items-center gap-1 rounded-md border border-cyan-400/60 bg-cyan-500/20 px-2.5 py-0.5 text-[11px] font-bold text-cyan-200">
+														<Zap class="h-3 w-3 text-cyan-300 shrink-0" />
+														<span>NUR SCHLÜSSEL-FOLGEN ({depInfo.effectiveMinutes ?? 45} Min.)</span>
+													</span>
+												{/if}
+											{/if}
+										</div>
+									{/if}
+
+									<!-- Desktop Title (hidden on <sm because it is shown right next to the poster) -->
+									<div class="hidden sm:flex flex-wrap items-center gap-2">
 										<h3
 											class="text-base sm:text-lg font-bold {isFulfilled
 												? 'text-slate-200'
@@ -1528,22 +1823,22 @@
 								</div>
 							</div>
 
-							<!-- Right Column: Tracking Controls (Movie Checkmark & Series Episode Counter) -->
-							<div class="flex sm:flex-row md:flex-col items-center md:items-end justify-between w-full md:w-auto gap-2.5 border-t md:border-t-0 border-slate-800/80 pt-3 md:pt-0 shrink-0">
+							<!-- Right Column: Tracking Controls (Full-width touch targets on mobile, right-aligned on desktop) -->
+							<div class="flex flex-col sm:flex-row md:flex-col items-stretch sm:items-center md:items-end justify-between w-full md:w-auto gap-2 border-t md:border-t-0 border-slate-800/80 pt-3 md:pt-0 shrink-0">
 								{#if item.isUpcoming}
-									<span class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300">
+									<span class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-xs font-semibold text-amber-300">
 										Kinostart: {new Date(item.releaseDate).toLocaleDateString('de-DE')}
 									</span>
 								{:else}
 									<button
 										type="button"
 										onclick={() => toggleWatchStatus(item)}
-										class="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition cursor-pointer {progress.status ===
+										class="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 sm:py-2 text-xs font-bold transition w-full sm:w-auto cursor-pointer {progress.status ===
 										'watched'
 											? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-950/50 hover:bg-emerald-400'
 											: 'bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700'}"
 									>
-										<CheckCircle2 class="h-4 w-4" />
+										<CheckCircle2 class="h-4 w-4 shrink-0" />
 										<span>
 											{progress.status === 'watched' ? 'Ganzer Film gesehen' : 'Ganzen Titel abhaken'}
 										</span>
@@ -1553,11 +1848,11 @@
 										<button
 											type="button"
 											onclick={() => toggleCreditsWatched(item)}
-											class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[11px] font-bold transition cursor-pointer {progress.watchedCredits
+											class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 sm:py-1.5 text-[11px] font-bold transition w-full sm:w-auto cursor-pointer {progress.watchedCredits
 												? 'border-cyan-400 bg-cyan-500 text-slate-950'
 												: 'border-cyan-500/50 bg-cyan-950/50 text-cyan-200 hover:bg-cyan-900/60'}"
 										>
-											<Zap class="h-3.5 w-3.5" />
+											<Zap class="h-3.5 w-3.5 shrink-0" />
 											<span>
 												{progress.watchedCredits
 													? 'Credit-Shortcut erledigt ✓'
@@ -1567,27 +1862,31 @@
 									{/if}
 
 									{#if item.mediaType === 'series' && item.episodeCount}
-										<div class="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs">
-											<Tv class="h-3.5 w-3.5 text-purple-400" />
-											<span class="text-slate-300 font-medium">
-												Folge {progress.watchedEpisodes} / {item.episodeCount}
-											</span>
-											<button
-												type="button"
-												onclick={() => adjustEpisodes(item, -1)}
-												class="ml-1 rounded bg-slate-800 px-1.5 py-0.5 text-slate-300 hover:bg-slate-700 cursor-pointer"
-												aria-label="Eine Folge weniger"
-											>
-												-
-											</button>
-											<button
-												type="button"
-												onclick={() => adjustEpisodes(item, 1)}
-												class="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300 hover:bg-slate-700 cursor-pointer"
-												aria-label="Eine Folge weiter"
-											>
-												+
-											</button>
+										<div class="flex items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 sm:px-2 sm:py-1 text-xs">
+											<div class="flex items-center gap-1.5">
+												<Tv class="h-3.5 w-3.5 text-purple-400" />
+												<span class="text-slate-300 font-medium">
+													Folge {progress.watchedEpisodes} / {item.episodeCount}
+												</span>
+											</div>
+											<div class="flex items-center gap-1">
+												<button
+													type="button"
+													onclick={() => adjustEpisodes(item, -1)}
+													class="ml-1 rounded-lg bg-slate-800 px-2.5 py-1 sm:px-1.5 sm:py-0.5 text-slate-200 hover:bg-slate-700 font-bold cursor-pointer"
+													aria-label="Eine Folge weniger"
+												>
+													-
+												</button>
+												<button
+													type="button"
+													onclick={() => adjustEpisodes(item, 1)}
+													class="rounded-lg bg-slate-800 px-2.5 py-1 sm:px-1.5 sm:py-0.5 text-slate-200 hover:bg-slate-700 font-bold cursor-pointer"
+													aria-label="Eine Folge weiter"
+												>
+													+
+												</button>
+											</div>
 										</div>
 									{/if}
 								{/if}
@@ -1595,7 +1894,7 @@
 								<button
 									type="button"
 									onclick={() => openItemModal(item)}
-									class="text-[11px] text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+									class="text-[11px] text-slate-400 hover:text-white inline-flex items-center justify-center gap-1 py-1 cursor-pointer"
 								>
 									<Info class="h-3.5 w-3.5" />
 									<span>Details & Credit-Guide</span>
@@ -1617,13 +1916,13 @@
 
 	<!-- ======================================================================== -->
 	<!-- NATIVE <dialog closedby="any"> MODAL FOR CREDIT SCENES & DETAILS         -->
-	<!-- (Follows modern-web-guidance: light-dismiss-a-dialog)                    -->
+	<!-- (Follows modern-web-guidance: light-dismiss-a-dialog & responsive-design)-->
 	<!-- ======================================================================== -->
 	<dialog
 		bind:this={dialogEl}
 		{...({ closedby: 'any' } as any)}
 		aria-labelledby="dialog-title"
-		class="m-auto w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 shadow-2xl"
+		class="m-auto w-[calc(100vw-1.25rem)] sm:w-full max-w-xl max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 shadow-2xl"
 	>
 		{#if activeModalItem}
 			{@const modalProgress = getItemProgress(activeModalItem.id)}

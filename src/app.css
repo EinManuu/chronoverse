@@ -29,3 +29,48 @@ dialog::backdrop {
 	content-visibility: auto;
 	contain-intrinsic-size: auto none auto 210px;
 }
+
+/* Responsive typography & aspect-ratio (modern-web-guidance: responsive-design) */
+.hero-title-clamp {
+	font-size: clamp(1.2rem, 0.95rem + 1.8vw, 1.65rem);
+}
+
+.poster-aspect {
+	aspect-ratio: 2 / 3;
+}
+
+/* Container query layout for timeline cards (modern-web-guidance: size-aware-styling) */
+.timeline-card-container {
+	container-type: inline-size;
+}
+
+.timeline-card-inner {
+	display: flex;
+	flex-direction: column;
+	gap: 0.875rem;
+}
+
+@media (min-width: 768px) {
+	.timeline-card-inner {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+	}
+}
+
+@supports (container-type: inline-size) {
+	@media (min-width: 768px) {
+		.timeline-card-inner {
+			flex-direction: column;
+			align-items: stretch;
+		}
+	}
+
+	@container (min-width: 560px) {
+		.timeline-card-inner {
+			flex-direction: row;
+			align-items: center;
+			justify-content: space-between;
+		}
+	}
+}

@@ -94,3 +94,16 @@ CREATE POLICY "Public read access for media_dependencies" ON public.media_depend
 CREATE POLICY "Users can read all friends progress" ON public.user_progress FOR SELECT USING (true);
 CREATE POLICY "Users can manage own progress" ON public.user_progress
     FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 7. Cross-Device Cloud Sync Profiles (PC <-> Mobile Sync without Login Friction)
+CREATE TABLE IF NOT EXISTS public.cloud_sync_profiles (
+    profile_key TEXT PRIMARY KEY, -- e.g. 'manu', 'max', 'sarah'
+    display_name TEXT NOT NULL DEFAULT 'Manu',
+    progress_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+    friends_list JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.cloud_sync_profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public cloud profile sync access" ON public.cloud_sync_profiles
+    FOR ALL USING (true) WITH CHECK (true);
