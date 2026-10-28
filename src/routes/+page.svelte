@@ -300,16 +300,16 @@
 			nonStudiosCount = 0;
 
 		for (const item of franchiseItems) {
-			if (item.isUpcoming) continue;
 			const scope = item.canonScope ?? 'core_studios';
+			const mins = item.isUpcoming ? 0 : item.runtimeMinutes || 0;
 			if (scope === 'core_studios') {
-				coreMins += item.runtimeMinutes || 0;
+				coreMins += mins;
 				coreCount++;
 			} else if (scope === 'expanded_universe') {
-				expandedMins += item.runtimeMinutes || 0;
+				expandedMins += mins;
 				expandedCount++;
 			} else {
-				nonStudiosMins += item.runtimeMinutes || 0;
+				nonStudiosMins += mins;
 				nonStudiosCount++;
 			}
 		}
@@ -508,11 +508,14 @@
 
 	// Overall Franchise Progress (including total, watched & remaining hours to complete the selected scopes!)
 	let franchiseProgress = $derived.by(() => {
+		const totalItems = scopedFranchiseItems.length;
+		const upcomingCount = scopedFranchiseItems.filter((i) => i.isUpcoming).length;
 		const released = scopedFranchiseItems.filter((i) => !i.isUpcoming);
-		if (released.length === 0) {
+		if (totalItems === 0) {
 			return {
 				watched: 0,
 				total: 0,
+				upcomingCount: 0,
 				percent: 0,
 				totalHours: 0,
 				watchedHours: 0,
@@ -563,8 +566,9 @@
 
 		return {
 			watched,
-			total: released.length,
-			percent: Math.round((watched / released.length) * 100),
+			total: totalItems,
+			upcomingCount,
+			percent: Math.round((watched / totalItems) * 100),
 			totalHours: Math.floor(totalMinutes / 60),
 			watchedHours: Math.floor(watchedMinutes / 60),
 			remainingHours: Math.floor(remainingMinutes / 60),
