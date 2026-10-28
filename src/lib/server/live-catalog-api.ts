@@ -322,26 +322,33 @@ async function fetchTvMazePortraits(queries: string[]): Promise<Record<string, s
 	const uniqueQueries = [...new Set(queries.filter(Boolean))];
 	const result: Record<string, string> = {};
 
-	await Promise.all(
-		uniqueQueries.map(async (q) => {
-			try {
-				const res = await fetch(
-					`https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(q)}`,
-					{ signal: AbortSignal.timeout(5000) }
-				);
-				if (!res.ok) return;
-				const data = (await res.json()) as {
-					image?: { medium?: string; original?: string };
-				};
-				const img = data?.image?.medium || data?.image?.original;
-				if (img) {
-					result[q] = img;
+	const chunkSize = 18;
+	for (let i = 0; i < uniqueQueries.length; i += chunkSize) {
+		const chunk = uniqueQueries.slice(i, i + chunkSize);
+		await Promise.all(
+			chunk.map(async (q) => {
+				try {
+					const res = await fetch(
+						`https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(q)}`,
+						{ signal: AbortSignal.timeout(5000) }
+					);
+					if (!res.ok) return;
+					const data = (await res.json()) as {
+						image?: { medium?: string; original?: string };
+					};
+					const img = data?.image?.medium || data?.image?.original;
+					if (img) {
+						result[q] = img;
+					}
+				} catch {
+					// Ignore timeout
 				}
-			} catch {
-				// Ignore timeout
-			}
-		})
-	);
+			})
+		);
+		if (i + chunkSize < uniqueQueries.length) {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+	}
 
 	return result;
 }
