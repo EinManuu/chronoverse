@@ -609,6 +609,355 @@ export async function fetchLiveCatalogFromApis(forceRefresh = false): Promise<Li
 
 	const allItems = [...baseItems, ...newlyDiscoveredItems];
 
+	// Canonical In-Universe Chronological Timeline Map (Year.SubOrder) across all scopes
+	const CANONICAL_CHRONO_KEY_MAP: Record<string, number> = {
+		// --- MARVEL: Antike & 1940er ---
+		'mcu-eyes-of-wakanda': -1260,
+		'nms-thor-tales-of-asgard-2011': 965,
+		'mcu-cap-first-avenger': 1942.1,
+		'nms-captain-america-1944-serial': 1944.1,
+		'mcu-agent-carter-s1': 1946.1,
+		'mcu-agent-carter-s2': 1947.1,
+		'mcu-oneshot-agent-carter': 1947.2,
+
+		// --- MARVEL: 1960er ---
+		'nms-xmen-first-class': 1962.1,
+		'mcu-fantastic-four': 1965.1,
+		'nms-marvel-super-heroes-1966': 1966.1,
+		'nms-spiderman-1967-series': 1967.1,
+		'nms-fantastic-four-1967-hb': 1967.2,
+
+		// --- MARVEL: 1970er ---
+		'nms-xmen-days-of-future-past': 1973.1,
+		'nms-spiderman-1977-movie': 1977.1,
+		'nms-amazing-spiderman-1977-cbs': 1977.2,
+		'nms-incredible-hulk-1977-pilot': 1977.3,
+		'nms-incredible-hulk-1977-series': 1978.1,
+		'nms-spiderman-strikes-back-1978': 1978.2,
+		'nms-japanese-spiderman-1978': 1978.3,
+		'nms-dr-strange-1978-tv-movie': 1978.4,
+		'nms-new-fantastic-four-1978': 1978.5,
+		'nms-incredible-hulk-married-1978': 1978.6,
+		'nms-captain-america-1979-reb-brown': 1979.1,
+		'nms-xmen-origins-wolverine': 1979.2,
+		'nms-spiderman-dragons-challenge-1979': 1979.3,
+		'nms-spider-woman-1979-animated': 1979.4,
+		'nms-captain-america-2-death-too-soon-1979': 1979.5,
+
+		// --- MARVEL: 1980er ---
+		'nms-spiderman-1981-solo': 1981.1,
+		'nms-spiderman-amazing-friends-1981': 1981.2,
+		'nms-incredible-hulk-1982-animated': 1982.1,
+		'nms-xmen-apocalypse': 1983.1,
+		'nms-howard-the-duck': 1986.1,
+		'nms-incredible-hulk-returns-1988': 1988.1,
+		'nms-trial-of-incredible-hulk-1989': 1989.1,
+		'nms-punisher-1989-lundgren': 1989.2,
+
+		// --- MARVEL: 1990er ---
+		'nms-death-of-incredible-hulk-1990': 1990.1,
+		'nms-captain-america-1990': 1990.2,
+		'nms-power-pack-1991-special': 1991.1,
+		'nms-xmen-dark-phoenix': 1992.1,
+		'nms-xmen-tas-90s': 1992.2,
+		'nms-fantastic-four-1994-corman': 1994.1,
+		'nms-iron-man-tas-1994': 1994.2,
+		'nms-fantastic-four-tas-1994': 1994.3,
+		'nms-spiderman-tas-90s': 1994.4,
+		'mcu-captain-marvel': 1995.1,
+		'nms-generation-x-1996': 1996.1,
+		'nms-incredible-hulk-tas-1996': 1996.2,
+		'mcu-xmen-97': 1997.1,
+		'nms-nightman-1997': 1997.2,
+		'nms-silver-surfer-tas-1998': 1998.1,
+		'nms-nick-fury-hasselhoff-1998': 1998.2,
+		'nms-blade-1': 1998.3,
+		'nms-spiderman-unlimited-1999': 1999.1,
+		'nms-avengers-united-they-stand-1999': 1999.2,
+
+		// --- MARVEL: 2000–2007 ---
+		'nms-xmen-2000': 2000.1,
+		'nms-xmen-evolution': 2000.2,
+		'nms-mutant-x-2001': 2001.1,
+		'nms-blade-2': 2002.1,
+		'nms-spiderman-raimi-1': 2002.2,
+		'nms-daredevil-2003': 2003.1,
+		'nms-madame-web': 2003.2,
+		'nms-x2-united': 2003.3,
+		'nms-hulk-2003': 2003.4,
+		'nms-spiderman-tnas-mtv-2003': 2003.5,
+		'nms-punisher-2004': 2004.1,
+		'nms-spiderman-raimi-2': 2004.2,
+		'nms-blade-trinity': 2004.3,
+		'nms-elektra-2005': 2005.1,
+		'nms-man-thing-2005': 2005.2,
+		'nms-fantastic-four-2005': 2005.3,
+		'nms-spiderman-raimi-3': 2005.4,
+		'nms-ultimate-avengers-1-2006': 2006.1,
+		'nms-xmen-last-stand': 2006.2,
+		'nms-blade-the-series': 2006.3,
+		'nms-ultimate-avengers-2-2006': 2006.4,
+		'nms-fantastic-four-wgh-2006': 2006.5,
+		'nms-invincible-iron-man-2007': 2007.1,
+		'nms-ghost-rider-1': 2007.2,
+		'nms-fantastic-four-silver-surfer': 2007.3,
+		'nms-doctor-strange-sorcerer-supreme-2007': 2007.4,
+
+		// --- MARVEL: 2008–2011 (Phase 1 Start) ---
+		'mcu-iron-man': 2008.1,
+		'nms-spectacular-spiderman': 2008.2,
+		'nms-next-avengers-2008': 2008.3,
+		'nms-punisher-war-zone': 2008.4,
+		'nms-wolverine-and-the-xmen-2009': 2009.1,
+		'nms-hulk-vs-2009': 2009.2,
+		'nms-iron-man-armored-adventures': 2009.3,
+		'nms-super-hero-squad-show': 2009.4,
+		'mcu-iron-man-2': 2010.05,
+		'mcu-incredible-hulk': 2010.1,
+		'mcu-oneshot-funny-thing': 2010.15,
+		'mcu-thor': 2010.2,
+		'mcu-oneshot-consultant': 2010.25,
+		'nms-black-panther-2010-animated': 2010.3,
+		'nms-planet-hulk-2010': 2010.4,
+		'nms-avengers-emh-2010': 2010.5,
+		'nms-marvel-anime-iron-man-2010': 2010.6,
+		'nms-marvel-anime-wolverine-2011': 2011.1,
+		'nms-marvel-anime-xmen-2011': 2011.2,
+		'nms-marvel-anime-blade-2011': 2011.3,
+		'nms-ghost-rider-2': 2011.4,
+
+		// --- MARVEL: 2012–2015 (Phase 1 Finale & Phase 2) ---
+		'nms-ultimate-spiderman-series': 2012.1,
+		'mcu-avengers-2012': 2012.2,
+		'mcu-oneshot-item-47': 2012.3,
+		'nms-amazing-spiderman-1': 2012.4,
+		'mcu-iron-man-3': 2013.1,
+		'nms-iron-man-rise-of-technovore-2013': 2013.2,
+		'nms-avengers-assemble-series': 2013.3,
+		'nms-the-wolverine-2013': 2013.4,
+		'nms-hulk-agents-of-smash': 2013.5,
+		'mcu-agents-of-shield': 2013.6,
+		'mcu-thor-dark-world': 2013.7,
+		'mcu-oneshot-all-hail-the-king': 2013.8,
+		'nms-avengers-confidential-bw-punisher-2014': 2014.1,
+		'mcu-cap-winter-soldier': 2014.2,
+		'nms-amazing-spiderman-2': 2014.3,
+		'mcu-gotg-1': 2014.4,
+		'mcu-i-am-groot': 2014.5,
+		'mcu-gotg-2': 2014.6,
+		'mcu-daredevil-s1-s3': 2015.1,
+		'mcu-jessica-jones-s1-s3': 2015.2,
+		'mcu-avengers-age-of-ultron': 2015.3,
+		'mcu-ant-man': 2015.4,
+		'nms-fantastic-four-2015': 2015.5,
+		'nms-gotg-animated-series': 2015.6,
+
+		// --- MARVEL: 2016–2019 (Phase 3) ---
+		'mcu-luke-cage-s1-s2': 2016.05,
+		'nms-deadpool-1': 2016.1,
+		'mcu-iron-fist-s1-s2': 2016.15,
+		'mcu-the-defenders': 2016.2,
+		'mcu-cap-civil-war': 2016.3,
+		'mcu-oneshot-team-thor': 2016.35,
+		'mcu-black-widow': 2016.4,
+		'mcu-black-panther': 2016.5,
+		'mcu-spider-man-homecoming': 2016.6,
+		'mcu-friendly-neighborhood-spiderman': 2016.65,
+		'mcu-the-punisher-s1-s2': 2016.7,
+		'mcu-doctor-strange-1': 2016.8,
+		'nms-legion-s1-s3': 2017.1,
+		'nms-marvel-future-avengers': 2017.2,
+		'nms-marvels-spiderman-2017': 2017.3,
+		'mcu-inhumans': 2017.4,
+		'nms-the-gifted-s1-s2': 2017.5,
+		'mcu-runaways-s1-s3': 2017.6,
+		'mcu-cloak-and-dagger': 2017.7,
+		'mcu-thor-ragnarok': 2017.8,
+		'nms-deadpool-2': 2018.1,
+		'mcu-ant-man-wasp': 2018.2,
+		'nms-marvel-rising-secret-warriors-2018': 2018.3,
+		'nms-venom-1': 2018.4,
+		'nms-spiderverse-1': 2018.5,
+		'mcu-avengers-infinity-war': 2018.8,
+		'mcu-avengers-endgame': 2019.1,
+
+		// --- MARVEL: 2020–2029 (Multiverse Saga) ---
+		'mcu-live-88987': 2020.1,
+		'nms-new-mutants': 2020.2,
+		'mcu-loki-s1': 2021.1,
+		'mcu-what-if-s1-s3': 2021.2,
+		'nms-modok-s1': 2021.3,
+		'nms-spidey-amazing-friends-2021': 2021.4,
+		'nms-hit-monkey-s1-s2': 2021.5,
+		'nms-morbius': 2022.1,
+		'nms-moon-girl-devil-dinosaur': 2023.1,
+		'nms-spiderverse-2': 2023.2,
+		'mcu-wandavision': 2023.5,
+		'mcu-shang-chi': 2024.1,
+		'mcu-falcon-winter-soldier': 2024.2,
+		'mcu-oneshot-peters-todo-list': 2024.3,
+		'mcu-spider-man-far-from-home': 2024.35,
+		'mcu-eternals': 2024.4,
+		'nms-venom-2': 2024.45,
+		'mcu-spider-man-no-way-home': 2024.5,
+		'mcu-dr-strange-mom': 2024.6,
+		'mcu-hawkeye': 2024.7,
+		'mcu-deadpool-wolverine': 2024.8,
+		'nms-venom-3': 2024.85,
+		'nms-kraven-the-hunter': 2024.9,
+		'mcu-moon-knight': 2025.1,
+		'mcu-black-panther-wakanda-forever': 2025.2,
+		'mcu-echo': 2025.3,
+		'mcu-she-hulk': 2025.4,
+		'mcu-ms-marvel': 2025.5,
+		'mcu-thor-love-and-thunder': 2025.6,
+		'mcu-werewolf-by-night': 2025.7,
+		'mcu-marvel-zombies': 2025.75,
+		'mcu-gotg-holiday-special': 2025.8,
+		'mcu-ant-man-quantumania': 2026.1,
+		'mcu-gotg-3': 2026.2,
+		'mcu-secret-invasion': 2026.3,
+		'mcu-loki-s2': 2026.35,
+		'mcu-the-marvels': 2026.4,
+		'mcu-agatha-all-along': 2026.5,
+		'mcu-ironheart': 2026.55,
+		'mcu-wonder-man': 2026.6,
+		'mcu-daredevil-born-again-s1': 2026.7,
+		'mcu-cap-brave-new-world': 2026.8,
+		'mcu-thunderbolts': 2027.1,
+		'mcu-daredevil-born-again-s2': 2027.2,
+		'mcu-punisher-special': 2027.3,
+		'mcu-spider-man-brand-new-day': 2027.4,
+		'mcu-vision-quest': 2027.5,
+		'mcu-avengers-doomsday': 2027.6,
+		'mcu-avengers-secret-wars': 2027.7,
+		'mcu-live-1293690': 2028.1,
+		'mcu-live-1386618': 2028.2,
+		'nms-logan': 2029.1,
+
+		// --- DC UNIVERSE ---
+		'dcu-wonder-woman-1918': 1918.1,
+		'dcu-man-of-steel': 2013.1,
+		'dcu-bvs': 2015.1,
+		'dcu-live-297761': 2016.1,
+		'dcu-live-141052': 2017.1,
+		'dcu-zack-snyders-justice-league': 2017.2,
+		'dcu-aquaman-1': 2018.1,
+		'dcu-live-495764': 2020.1,
+		'dcu-the-suicide-squad-2021': 2021.1,
+		'dcu-peacemaker-s1': 2022.1,
+		'dcu-live-436270': 2022.2,
+		'dcu-the-batman': 2022.3,
+		'dcu-the-penguin': 2022.4,
+		'dcu-live-594767': 2023.1,
+		'dcu-the-flash': 2023.2,
+		'dcu-blue-beetle': 2023.3,
+		'dcu-live-572802': 2023.4,
+		'dcu-creature-commandos-s1': 2024.1,
+		'dcu-superman-2025': 2025.1,
+		'dcu-peacemaker-s2': 2025.2,
+		'dcu-supergirl-2026': 2026.1,
+		'dcu-clayface-2026': 2026.2,
+		'dcu-lanterns': 2026.3,
+		'dcu-the-batman-part-ii': 2027.1,
+
+		// --- STAR WARS (VSY = negative, NSY = positive) ---
+		'starwars-live-202998': -232.0,
+		'sw-acolyte': -132.0,
+		'sw-ep1-phantom-menace': -32.0,
+		'sw-ep2-attack-of-clones': -22.2,
+		'starwars-live-12180': -22.1,
+		'starwars-live-3122': -21.5,
+		'sw-clone-wars': -21.0,
+		'starwars-live-251091': -20.0,
+		'sw-ep3-revenge-of-sith': -19.0,
+		'sw-bad-batch': -18.5,
+		'starwars-live-289219': -18.0,
+		'starwars-live-63722': -15.2,
+		'starwars-live-25': -15.1,
+		'sw-solo': -10.0,
+		'starwars-live-288055': -9.5,
+		'sw-obi-wan-kenobi': -9.0,
+		'sw-andor-s1-s2': -5.0,
+		'starwars-live-287663': -4.5,
+		'sw-rebels': -4.0,
+		'sw-rogue-one': -0.1,
+		'sw-ep4-new-hope': 0.0,
+		'starwars-live-74849': 1.0,
+		'sw-ep5-empire': 3.0,
+		'starwars-live-1884': 3.2,
+		'starwars-live-10372': 3.3,
+		'starwars-live-3478': 3.5,
+		'sw-ep6-return-of-jedi': 4.0,
+		'sw-mandalorian': 9.1,
+		'sw-book-of-boba-fett': 9.2,
+		'sw-ahsoka-s1': 10.1,
+		'sw-skeleton-crew': 10.2,
+		'sw-mando-grogu-movie': 11.1,
+		'sw-ahsoka-s2': 11.2,
+		'starwars-live-71412': 30.1,
+		'starwars-live-85536': 30.2,
+		'starwars-live-79093': 34.0,
+		'starwars-live-1417668': 50.0
+	};
+
+	const LIVE_ITEM_ERA_OVERRIDES: Record<string, { inUniverseYear: string; timelineAxisYear: string }> = {
+		'starwars-live-202998': { inUniverseYear: '232 VSY (Hohe Republik)', timelineAxisYear: '232 VSY' },
+		'starwars-live-12180': { inUniverseYear: '22 VSY (Klonkriege)', timelineAxisYear: '22 VSY' },
+		'starwars-live-3122': { inUniverseYear: '22–19 VSY (Legends)', timelineAxisYear: '21 VSY*' },
+		'starwars-live-251091': { inUniverseYear: '20 VSY – 9 NSY', timelineAxisYear: '20 VSY' },
+		'starwars-live-289219': { inUniverseYear: '18 VSY', timelineAxisYear: '18 VSY' },
+		'starwars-live-63722': { inUniverseYear: '15 VSY (Legends)', timelineAxisYear: '15 VSY' },
+		'starwars-live-25': { inUniverseYear: '15 VSY (Legends)', timelineAxisYear: '15 VSY*' },
+		'starwars-live-288055': { inUniverseYear: 'ca. 10 VSY', timelineAxisYear: '10 VSY' },
+		'starwars-live-287663': { inUniverseYear: '5 VSY', timelineAxisYear: '5 VSY' },
+		'starwars-live-74849': { inUniverseYear: '1 NSY (Legends)', timelineAxisYear: '1 NSY*' },
+		'starwars-live-1884': { inUniverseYear: '3 NSY (Legends)', timelineAxisYear: '3 NSY*' },
+		'starwars-live-10372': { inUniverseYear: '3 NSY (Legends)', timelineAxisYear: '3 NSY*' },
+		'starwars-live-3478': { inUniverseYear: '3.5 NSY (Legends)', timelineAxisYear: '3 NSY*' },
+		'starwars-live-71412': { inUniverseYear: '32 VSY – 34 NSY (Anthologie)', timelineAxisYear: 'Multi' },
+		'starwars-live-85536': { inUniverseYear: 'Klassische Saga (Anthologie)', timelineAxisYear: 'Multi' },
+		'starwars-live-79093': { inUniverseYear: '34–35 NSY', timelineAxisYear: '34 NSY' },
+		'starwars-live-1417668': { inUniverseYear: 'ca. 50 NSY', timelineAxisYear: '50 NSY' }
+	};
+
+	for (const item of allItems) {
+		const override = LIVE_ITEM_ERA_OVERRIDES[item.id];
+		if (override) {
+			item.inUniverseYear = override.inUniverseYear;
+			item.timelineAxisYear = override.timelineAxisYear;
+		}
+	}
+
+	// Normalize chronologicalOrder and releaseOrder per franchise into clean sequential integers (1, 2, 3...)
+	for (const fId of ['mcu', 'dcu', 'starwars'] as const) {
+		const fItems = allItems.filter((i) => i.franchiseId === fId);
+
+		// 1. Chronological Order (by CANONICAL_CHRONO_KEY_MAP, falling back to release year)
+		fItems.sort((a, b) => {
+			const keyA = CANONICAL_CHRONO_KEY_MAP[a.id] ?? parseInt(a.releaseDate.slice(0, 4), 10) + 0.99;
+			const keyB = CANONICAL_CHRONO_KEY_MAP[b.id] ?? parseInt(b.releaseDate.slice(0, 4), 10) + 0.99;
+			if (keyA !== keyB) return keyA - keyB;
+			return a.releaseDate.localeCompare(b.releaseDate);
+		});
+		fItems.forEach((item, idx) => {
+			item.chronologicalOrder = idx + 1;
+		});
+
+		// 2. Release Order (strictly by releaseDate YYYY-MM-DD, with chronologicalOrder as tie-breaker)
+		fItems.sort((a, b) => {
+			const cmp = a.releaseDate.localeCompare(b.releaseDate);
+			if (cmp !== 0) return cmp;
+			return a.chronologicalOrder - b.chronologicalOrder;
+		});
+		fItems.forEach((item, idx) => {
+			item.releaseOrder = idx + 1;
+		});
+	}
+
+	// Sort allItems by chronologicalOrder by default
+	allItems.sort((a, b) => a.chronologicalOrder - b.chronologicalOrder);
+
 	// 2. Batch-fetch all Wikipedia theatrical/series posters in parallel chunks
 	const allWikiTitles = [
 		...Object.values(WIKIPEDIA_TITLE_MAP),

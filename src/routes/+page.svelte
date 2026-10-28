@@ -1576,7 +1576,7 @@
 											{/if}
 											<div class="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-1.5 py-1 flex items-center justify-between">
 												<span class="text-[9px] font-bold text-white/90">
-													{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `#${item.releaseOrder}`}
+													{sortOrder === 'chronological' ? `#${index + 1}` : `#${index + 1}`}
 												</span>
 												<span class="text-[8px] font-semibold text-amber-300 truncate max-w-[54px]">
 													{item.streamingProvider}
@@ -1585,7 +1585,7 @@
 										{:else}
 											<div class="flex h-full w-full flex-col justify-between p-2">
 												<span class="text-[10px] font-bold uppercase tracking-wider text-white/75">
-													{sortOrder === 'chronological' ? `#${item.chronologicalOrder}` : `Rel #${item.releaseOrder}`}
+													{sortOrder === 'chronological' ? `#${index + 1}` : `Rel #${index + 1}`}
 												</span>
 												<div class="text-[11px] font-bold leading-tight text-white line-clamp-3">
 													{item.title}
