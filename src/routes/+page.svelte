@@ -31,7 +31,8 @@
 		Star,
 		UserPlus,
 		Cloud,
-		Check
+		Check,
+		Trophy
 	} from 'lucide-svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -63,6 +64,8 @@
 
 	// Start with the complete timeline loaded ("Alle Titel"), with 1-click toggle to "Road to..."
 	let roadToTargetId = $state<string | null>(null);
+	let roadToMode = $state<'express' | 'marathon'>('express');
+	let marathonIncludeOptional = $state(false); // false = 63 Core Releases; true = 78+ inkl. Optionale & One-Shots
 	let selectedFriendId = $state<string | null>(null);
 
 	// User Progress Map synced across devices via /api/progress (Supabase) + localStorage fallback
@@ -368,6 +371,33 @@
 		return map;
 	});
 
+	// Items preceding the active milestone for Marathon Mode (63 core titles vs 78+ with optional)
+	let roadToMarathonItems = $derived.by(() => {
+		if (!roadToTargetId || !activeMilestone) return [];
+
+		return franchiseItems.filter((item) => {
+			if (item.id === roadToTargetId) return false;
+
+			const isBefore =
+				sortOrder === 'chronological'
+					? item.chronologicalOrder < activeMilestone.chronologicalOrder
+					: item.releaseOrder < activeMilestone.releaseOrder;
+
+			if (!isBefore) return false;
+
+			if (!marathonIncludeOptional) {
+				// 63 Core Releases: Marvel Studios movies, series & specials (no one-shots, no non-studios, no expanded Marvel TV)
+				const scope = item.canonScope ?? 'core_studios';
+				if (scope !== 'core_studios') return false;
+				if (item.mediaType === 'oneshot') return false;
+				return true;
+			}
+
+			// When optional is enabled, include scoped items (respecting canon scope checkboxes)
+			return isCanonScopeEnabled(item);
+		});
+	});
+
 	let selectedFriend = $derived(
 		friendsList.find((f) => f.id === selectedFriendId) ?? null
 	);
@@ -388,9 +418,15 @@
 
 		// 1. Road-to Filter
 		if (roadToTargetId) {
-			list = [...franchiseItems].filter(
-				(item) => dependencyMap.has(item.id) || item.id === roadToTargetId
-			);
+			if (roadToMode === 'express') {
+				list = [...franchiseItems].filter(
+					(item) => dependencyMap.has(item.id) || item.id === roadToTargetId
+				);
+			} else {
+				const marathonSet = new Set(roadToMarathonItems.map((i) => i.id));
+				marathonSet.add(roadToTargetId);
+				list = [...franchiseItems].filter((item) => marathonSet.has(item.id));
+			}
 		}
 
 		// 1b. Phase / Era Filter
@@ -449,7 +485,10 @@
 	// Readiness Calculation for "Road to..." Banner (including Credit-Scene time-saver calculation!)
 	let roadToStats = $derived.by(() => {
 		if (!roadToTargetId) return null;
-		const reqItems = franchiseItems.filter((i) => dependencyMap.has(i.id));
+		const reqItems =
+			roadToMode === 'express'
+				? franchiseItems.filter((i) => dependencyMap.has(i.id))
+				: roadToMarathonItems;
 		const total = reqItems.length;
 		if (total === 0) return null;
 
@@ -1146,12 +1185,73 @@
 				</div>
 			</div>
 
+			{#if activeMilestone}
+				<!-- Mode Selector: Express (13 Tie-Ins) vs Marathon (63 Core / 78+ Opt) -->
+				<div class="mt-4 pt-4 border-t border-slate-800/80 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-950/40 rounded-xl p-3 border border-slate-800/60">
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="text-xs font-bold uppercase tracking-wider text-slate-400 mr-1">Vorbereitungs-Pfad:</span>
+						
+						<!-- Express Guide Button -->
+						<button
+							type="button"
+							onclick={() => (roadToMode = 'express')}
+							class="rounded-xl px-3 py-1.5 text-xs font-semibold border transition flex items-center gap-1.5 cursor-pointer {roadToMode === 'express'
+								? 'bg-cyan-500 text-slate-950 border-cyan-400 shadow-md shadow-cyan-950/50'
+								: 'bg-slate-900/90 text-cyan-300 border-cyan-500/40 hover:bg-cyan-950/40'}"
+						>
+							<Zap class="h-3.5 w-3.5" />
+							<span>⚡ Express-Guide ({dependencyMap.size} direkte Tie-Ins)</span>
+						</button>
+
+						<!-- Marathon Button -->
+						<button
+							type="button"
+							onclick={() => (roadToMode = 'marathon')}
+							class="rounded-xl px-3 py-1.5 text-xs font-semibold border transition flex items-center gap-1.5 cursor-pointer {roadToMode === 'marathon'
+								? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-950/50'
+								: 'bg-slate-900/90 text-amber-300 border-amber-500/40 hover:bg-amber-950/40'}"
+						>
+							<Trophy class="h-3.5 w-3.5" />
+							<span>🏆 Voller Marathon ({roadToMarathonItems.length} Titel vor {activeMilestone.title.split(':')[0]})</span>
+						</button>
+					</div>
+
+					{#if roadToMode === 'marathon'}
+						<div class="flex items-center gap-2">
+							<button
+								type="button"
+								onclick={() => (marathonIncludeOptional = !marathonIncludeOptional)}
+								class="rounded-xl px-3 py-1.5 text-xs font-semibold border transition flex items-center gap-1.5 cursor-pointer {marathonIncludeOptional
+									? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm'
+									: 'bg-slate-900/90 text-slate-300 border-slate-700 hover:border-slate-500'}"
+								title="Schaltet zwischen den 63 Kernfilmen & Serien oder dem 78+ Titel Gesamtkatalog um"
+							>
+								<span class="font-bold text-amber-400">{marathonIncludeOptional ? '✓' : '○'}</span>
+								<span>
+									{marathonIncludeOptional
+										? 'Inkl. Optionale & One-Shots (78+ Titel)'
+										: 'Nur Kern-Titel (63 Pflicht-Titel)'}
+								</span>
+							</button>
+						</div>
+					{:else}
+						<div class="text-[11px] text-cyan-300/90 flex items-center gap-1.5">
+							<Sparkles class="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+							<span>Nur die {dependencyMap.size} Schlüsselwerke & Credit-Scenes für {activeMilestone.title}!</span>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			<!-- Active Readiness & Watchtime Dashboard (works for BOTH "Alle Titel" and "Road to...") -->
 			<div class="mt-4 pt-4 border-t border-slate-800/80 grid grid-cols-1 md:grid-cols-3 gap-4">
 				{#if activeMilestone && roadToStats}
 					<div class="rounded-xl bg-slate-950/70 border border-slate-800/90 p-3.5">
 						<div class="flex items-center justify-between text-xs text-slate-400 mb-1">
-							<span>Readiness für <strong class="text-white">{activeMilestone.title}</strong></span>
+							<span>
+								Readiness für <strong class="text-white">{activeMilestone.title}</strong>
+								<span class="text-[10px] text-slate-500 ml-1">({roadToMode === 'express' ? 'Express' : 'Marathon'})</span>
+							</span>
 							<span class="text-amber-300 font-bold">{roadToStats.percent}% bereit</span>
 						</div>
 						<div class="h-2 w-full overflow-hidden rounded-full bg-slate-800 mb-2">
@@ -1161,7 +1261,11 @@
 							></div>
 						</div>
 						<p class="text-[11px] text-slate-400">
-							{roadToStats.watchedCount} von {roadToStats.total} Voraussetzungen erfüllt
+							{#if roadToMode === 'express'}
+								{roadToStats.watchedCount} von {roadToStats.total} Express-Voraussetzungen erfüllt
+							{:else}
+								{roadToStats.watchedCount} von {roadToStats.total} Marathon-Titeln geschaut
+							{/if}
 						</p>
 					</div>
 
@@ -1170,7 +1274,9 @@
 							<Clock class="h-5 w-5" />
 						</div>
 						<div>
-							<div class="text-xs text-slate-400">Effektive Rest-Watchtime (inkl. Shortcuts)</div>
+							<div class="text-xs text-slate-400">
+								{roadToMode === 'express' ? 'Effektive Rest-Watchtime (inkl. Shortcuts)' : 'Verbleibende Marathon-Watchtime'}
+							</div>
 							<div class="text-sm font-bold text-white">
 								{#if roadToStats.hours === 0 && roadToStats.mins === 0}
 									100 % vorbereitet – Kino kann kommen! 🎉
@@ -1182,9 +1288,13 @@
 								<div class="text-[11px] text-cyan-300 font-medium">
 									⚡ Du sparst {roadToStats.savedHours} Std. {roadToStats.savedMins} Min. durch „Nur Credit-Scene“-Tipps!
 								</div>
-							{:else}
+							{:else if roadToMode === 'express'}
 								<div class="text-[11px] text-slate-400">
 									Davon noch <strong class="text-red-300">{roadToStats.essentialOpen} Pflicht-Titel</strong> offen
+								</div>
+							{:else}
+								<div class="text-[11px] text-slate-400">
+									{roadToStats.total - roadToStats.watchedCount} Titel bis zum Event-Start
 								</div>
 							{/if}
 						</div>
