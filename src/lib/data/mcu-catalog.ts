@@ -1944,27 +1944,6 @@ export const MCU_ITEMS: MediaItem[] = [
 		]
 	},
 	{
-		id: 'mcu-xmen-legacy-collection',
-		franchiseId: 'mcu',
-		tmdbId: 36657,
-		mediaType: 'movie',
-		title: 'X-Men Legacy: X-Men 1–2, Zukunft ist Vergangenheit & Logan (Erde-10005)',
-		releaseDate: '2000-07-14',
-		inUniverseYear: 'Erde-10005 (Multiversum)',
-		timelineAxisYear: 'X-Men',
-		runtimeMinutes: 510,
-		chronologicalOrder: 51.2,
-		releaseOrder: 60,
-		phaseOrEra: 'Multiverse Legacy (Für Doomsday)',
-		synopsis:
-			'Die zentralen Fox-X-Men-Filme rund um Professor X (Patrick Stewart), Magneto (Ian McKellen), Beast (Kelsey Grammer), Nightcrawler (Alan Cumming), Cyclops (James Marsden), Mystique (Rebecca Romijn) und Wolverine (Hugh Jackman), die in Deadpool & Wolverine sowie Avengers: Doomsday ins MCU zurückkehren!',
-		posterGradient: 'from-amber-700 via-blue-950 to-black',
-		streamingProvider: 'Disney+',
-		isUpcoming: false,
-		isEventMilestone: false,
-		creditScenes: []
-	},
-	{
 		id: 'mcu-xmen-97',
 		franchiseId: 'mcu',
 		tmdbId: 138502,
@@ -2479,12 +2458,17 @@ export const MCU_DEPENDENCIES: MediaDependency[] = [
 	},
 	{
 		targetMediaId: 'mcu-avengers-doomsday',
-		requiredMediaId: 'mcu-xmen-legacy-collection',
+		requiredMediaId: 'nms-xmen-days-of-future-past',
 		priority: 'recommended',
-		watchScope: 'key_episodes',
-		effectiveMinutes: 130,
-		scopeHint: '⚡ Zeitspar-Tipp: „X-Men: Zukunft ist Vergangenheit“ (130 Min.) reicht als Auffrischung für Professor X, Magneto, Beast, Mystique & Cyclops!',
-		reason: 'Der Original-Cast der X-Men (Patrick Stewart, Ian McKellen, Kelsey Grammer, James Marsden, Alan Cumming) spielt eine Hauptrolle in Doomsday.'
+		watchScope: 'full',
+		reason: 'Vereint den Original-Cast der X-Men (Patrick Stewart, Ian McKellen, Kelsey Grammer, James Marsden), der eine Hauptrolle in Avengers: Doomsday spielt.'
+	},
+	{
+		targetMediaId: 'mcu-avengers-doomsday',
+		requiredMediaId: 'nms-x2-united',
+		priority: 'bonus',
+		watchScope: 'full',
+		reason: 'Führt Nightcrawler (Alan Cumming) sowie Mystique (Rebecca Romijn) und Cyclops auf dem Höhepunkt der klassischen X-Men-Ära ein.'
 	},
 	{
 		targetMediaId: 'mcu-avengers-doomsday',
